@@ -44,6 +44,14 @@ GATConv
 .. autoclass:: dgl.nn.pytorch.conv.GATConv
     :members: forward
     :show-inheritance:
+    
+    
+EGATConv
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: dgl.nn.pytorch.conv.EGATConv
+    :members: forward
+    :show-inheritance:
 
 EdgeConv
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -272,6 +280,13 @@ Sequential
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: dgl.nn.pytorch.utils.Sequential
+    :members:
+    :show-inheritance:
+
+WeightBasis
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: dgl.nn.pytorch.utils.WeightBasis
     :members:
     :show-inheritance:
 

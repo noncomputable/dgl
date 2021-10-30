@@ -183,6 +183,7 @@ epub_exclude_files = ['search.html']
 
 # -- Extension configuration -------------------------------------------------
 autosummary_generate = True
+autodoc_member_order = 'alphabetical'
 
 intersphinx_mapping = {
     'python': ('https://docs.python.org/{.major}'.format(sys.version_info), None),
@@ -199,12 +200,14 @@ examples_dirs = ['../../tutorials/blitz',
                  '../../tutorials/large',
                  '../../tutorials/dist',
                  '../../tutorials/models',
-                 '../../tutorials/multi']  # path to find sources
+                 '../../tutorials/multi',
+                 '../../tutorials/cpu']  # path to find sources
 gallery_dirs = ['tutorials/blitz/',
                 'tutorials/large/',
                 'tutorials/dist/',
                 'tutorials/models/',
-                'tutorials/multi/']  # path to generate docs
+                'tutorials/multi/',
+                'tutorials/cpu']  # path to generate docs
 reference_url = {
     'dgl' : None,
     'numpy': 'http://docs.scipy.org/doc/numpy/',

@@ -1,9 +1,24 @@
 /*!
  *  Copyright (c) 2021 by Contributors
- * \file nccl_api.cc
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ * \file nccl_api.cu
  * \brief Implementation of wrapper around NCCL routines.
  */
 
+
+#ifdef DGL_USE_NCCL
 
 #include "nccl_api.h"
 
@@ -28,7 +43,6 @@
 #include "cuda_common.h"
 #include "../../runtime/workspace.h"
 #include "../../partition/ndarray_partition.h"
-#include "../../kernel/cuda/atomic.cuh"
 #include "../../array/cuda/dgl_cub.cuh"
 #include "../../array/cuda/array_index_select.cuh"
 
@@ -43,7 +57,6 @@
 
 namespace dgl {
 
-using namespace kernel::cuda;
 using namespace partition;
 
 namespace runtime {
@@ -138,10 +151,6 @@ std::pair<IdArray, NDArray> SparsePush(
     IdArray in_idx,
     NDArray in_value,
     NDArrayPartitionRef part) {
-  CHECK_EQ(in_idx->shape[0], in_value->shape[0]) <<
-      "Leading dimension of indices (" << in_idx->shape[0] << ") must match "
-      "leading dimension of values (" << in_value->shape[0] << ").";
-
   const auto& ctx = in_idx->ctx;
   CHECK_EQ(ctx, in_value->ctx) << "Indices and values must be on the same "
       "device";
@@ -150,9 +159,15 @@ std::pair<IdArray, NDArray> SparsePush(
   // TODO(dlasalle): Get the stream from the device context.
   cudaStream_t stream = 0;
 
-  CHECK_EQ(in_idx->ndim, 1) << "Indices must be 1-dimensional";
+  CHECK_LE(in_idx->ndim, 1) << "The tensor of sending indices must be of "
+      "dimension one (or empty).";
+  const int64_t num_in = in_idx->ndim > 0 ? in_idx->shape[0] : 0;
 
-  const int64_t num_in = in_idx->shape[0];
+  CHECK_EQ(num_in, in_value->ndim > 0 ? in_value->shape[0] : 0) <<
+      "Leading dimension of indices (" << num_in << ") must match "
+      "leading dimension of values (" <<
+      (in_value->ndim > 0 ? in_value->shape[0] : 0) << ").";
+
   int64_t num_feat = 1;
   for (int d = 1; d < in_value->ndim; ++d) {
     num_feat *= in_value->shape[d];
@@ -174,7 +189,7 @@ std::pair<IdArray, NDArray> SparsePush(
   Workspace<DType> send_value(device, ctx, num_in*num_feat);
 
   // permute the indices and values
-  {
+  if (num_in > 0) {
     const dim3 block(256);
     const dim3 grid((num_in+block.x-1)/block.x);
 
@@ -297,10 +312,9 @@ NDArray SparsePull(
 
   cudaStream_t stream = CUDAThreadEntry::ThreadLocal()->stream;
 
-  CHECK_EQ(req_idx->ndim, 1) << "The tensor of requested indices must be of "
-      "dimension one.";
-
-  const int64_t num_in = req_idx->shape[0];
+  CHECK_LE(req_idx->ndim, 1) << "The tensor of requested indices must be of "
+      "dimension one (or empty).";
+  const int64_t num_in = req_idx->ndim > 0 ? req_idx->shape[0] : 0;
   int64_t num_feat = 1;
   for (int d = 1; d < local_tensor->ndim; ++d) {
     num_feat *= local_tensor->shape[d];
@@ -328,7 +342,7 @@ NDArray SparsePull(
       static_cast<const int64_t*>(part_perm.second->data);
 
   // permute requests
-  {
+  if (num_in > 0) {
     const dim3 block(256);
     const dim3 grid((num_in+block.x-1)/block.x);
 
@@ -336,6 +350,7 @@ NDArray SparsePull(
         static_cast<const IdType*>(req_idx->data),
         perm,
         num_in,
+        req_idx->shape[0],
         send_idx.get());
     CUDA_CALL(cudaGetLastError());
   }
@@ -443,6 +458,7 @@ NDArray SparsePull(
         num_feat,
         static_cast<IdType*>(recv_idx->data),
         response_prefix_host.back(),
+        local_tensor->shape[0],
         filled_response_value.get());
     CUDA_CALL(cudaGetLastError());
   }
@@ -625,12 +641,12 @@ void NCCLCommunicator::AllToAll(
     cudaStream_t stream) {
   const ncclDataType_t type = NCCLType<IdType>();
 
-  ncclGroupStart();
+  NCCL_CALL(ncclGroupStart());
   for (int r = 0; r < size_; ++r) {
-    ncclSend(send+(r*count), count, type, r, comm_, stream);
-    ncclRecv(recv+(r*count), count, type, r, comm_, stream);
+    NCCL_CALL(ncclSend(send+(r*count), count, type, r, comm_, stream));
+    NCCL_CALL(ncclRecv(recv+(r*count), count, type, r, comm_, stream));
   }
-  ncclGroupEnd();
+  NCCL_CALL(ncclGroupEnd());
 }
 
 template
@@ -660,23 +676,26 @@ void NCCLCommunicator::SparseAllToAll(
   const ncclDataType_t idx_type = NCCLType<IdType>();
   const ncclDataType_t value_type = NCCLType<DType>();
 
-  ncclGroupStart();
+  // idxs
+  AllToAllV(send_idx, send_prefix, recv_idx, recv_prefix, stream);
+
+  // values
+  NCCL_CALL(ncclGroupStart());
   for (int r = 0; r < size_; ++r) {
     const int64_t send_size = send_prefix[r+1]-send_prefix[r];
     if (send_size > 0) {
-      ncclSend(send_idx+send_prefix[r], send_size, idx_type, r, comm_, stream);
-      ncclSend(send_value+send_prefix[r]*num_feat, send_size*num_feat,
-               value_type, r, comm_, stream);
+      NCCL_CALL(ncclSend(send_value+send_prefix[r]*num_feat, send_size*num_feat,
+                         value_type, r, comm_, stream));
     }
     const int64_t recv_size = recv_prefix[r+1]-recv_prefix[r];
     if (recv_size > 0) {
-      ncclRecv(recv_idx+recv_prefix[r], recv_size, idx_type, r, comm_, stream);
-      ncclRecv(recv_value+recv_prefix[r]*num_feat, recv_size*num_feat,
-               value_type, r, comm_, stream);
+      NCCL_CALL(ncclRecv(recv_value+recv_prefix[r]*num_feat, recv_size*num_feat,
+                         value_type, r, comm_, stream));
     }
   }
-  ncclGroupEnd();
+  NCCL_CALL(ncclGroupEnd());
 }
+
 
 template
 void NCCLCommunicator::SparseAllToAll<int32_t, __half>(
@@ -781,5 +800,5 @@ DGL_REGISTER_GLOBAL("cuda.nccl._CAPI_DGLNCCLSparseAllToAllPull")
 }  // namespace runtime
 }  // namespace dgl
 
-
+#endif
 

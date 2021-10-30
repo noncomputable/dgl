@@ -24,7 +24,7 @@ def _AXWb(A, X, W, b):
 def test_graph_conv0(out_dim):
     g = dgl.DGLGraph(nx.path_graph(3)).to(F.ctx())
     ctx = F.ctx()
-    adj = g.adjacency_matrix(transpose=False, ctx=ctx)
+    adj = g.adjacency_matrix(transpose=True, ctx=ctx)
 
     conv = nn.GraphConv(5, out_dim, norm='none', bias=True)
     conv = conv.to(ctx)
@@ -81,7 +81,7 @@ def test_graph_conv0(out_dim):
 
 @parametrize_dtype
 @pytest.mark.parametrize('g', get_cases(['homo', 'bipartite'], exclude=['zero-degree', 'dglgraph']))
-@pytest.mark.parametrize('norm', ['none', 'both', 'right'])
+@pytest.mark.parametrize('norm', ['none', 'both', 'right', 'left'])
 @pytest.mark.parametrize('weight', [True, False])
 @pytest.mark.parametrize('bias', [True, False])
 @pytest.mark.parametrize('out_dim', [1, 2])
@@ -186,7 +186,7 @@ def test_tagconv(out_dim):
     g = dgl.DGLGraph(nx.path_graph(3))
     g = g.to(F.ctx())
     ctx = F.ctx()
-    adj = g.adjacency_matrix(transpose=False, ctx=ctx)
+    adj = g.adjacency_matrix(transpose=True, ctx=ctx)
     norm = th.pow(g.in_degrees().float(), -0.5)
 
     conv = nn.TAGConv(5, out_dim, bias=True)
@@ -565,6 +565,28 @@ def test_gat_conv_bi(g, idtype, out_dim, num_heads):
     assert a.shape == (g.number_of_edges(), num_heads, 1)
 
 @parametrize_dtype
+@pytest.mark.parametrize('g', get_cases(['homo'], exclude=['zero-degree']))
+@pytest.mark.parametrize('out_node_feats', [1, 5])
+@pytest.mark.parametrize('out_edge_feats', [1, 5])
+@pytest.mark.parametrize('num_heads', [1, 4])
+def test_egat_conv(g, idtype, out_node_feats, out_edge_feats, num_heads):
+    g = g.astype(idtype).to(F.ctx())
+    ctx = F.ctx() 
+    egat = nn.EGATConv(in_node_feats=10,
+                       in_edge_feats=5,
+                       out_node_feats=out_node_feats,
+                       out_edge_feats=out_edge_feats,
+                       num_heads=num_heads)
+    nfeat = F.randn((g.number_of_nodes(), 10))
+    efeat = F.randn((g.number_of_edges(), 5))
+    
+    egat = egat.to(ctx)
+    h, f = egat(g, nfeat, efeat)
+    h, f, attn = egat(g, nfeat, efeat, True)
+
+    th.save(egat, tmp_buffer)    
+
+@parametrize_dtype
 @pytest.mark.parametrize('g', get_cases(['homo', 'block-bipartite']))
 @pytest.mark.parametrize('aggre_type', ['mean', 'pool', 'gcn', 'lstm'])
 def test_sage_conv(idtype, g, aggre_type):
@@ -726,6 +748,23 @@ def test_gated_graph_conv(g, idtype):
     assert h.shape[-1] == 10
 
 @parametrize_dtype
+@pytest.mark.parametrize('g', get_cases(['homo'], exclude=['zero-degree']))
+def test_gated_graph_conv_one_etype(g, idtype):
+    ctx = F.ctx()
+    g = g.astype(idtype).to(ctx)
+    ggconv = nn.GatedGraphConv(5, 10, 5, 1)
+    etypes = th.zeros(g.number_of_edges())
+    feat = F.randn((g.number_of_nodes(), 5))
+    ggconv = ggconv.to(ctx)
+    etypes = etypes.to(ctx)
+
+    h = ggconv(g, feat, etypes)
+    h2 = ggconv(g, feat)
+    # current we only do shape check
+    assert F.allclose(h, h2)
+    assert h.shape[-1] == 10
+
+@parametrize_dtype
 @pytest.mark.parametrize('g', get_cases(['homo', 'block-bipartite'], exclude=['zero-degree']))
 def test_nn_conv(g, idtype):
     g = g.astype(idtype).to(F.ctx())
@@ -789,7 +828,7 @@ def test_dense_graph_conv(norm_type, g, idtype, out_dim):
     g = g.astype(idtype).to(F.ctx())
     ctx = F.ctx()
     # TODO(minjie): enable the following option after #1385
-    adj = g.adjacency_matrix(transpose=False, ctx=ctx).to_dense()
+    adj = g.adjacency_matrix(transpose=True, ctx=ctx).to_dense()
     conv = nn.GraphConv(5, out_dim, norm=norm_type, bias=True)
     dense_conv = nn.DenseGraphConv(5, out_dim, norm=norm_type, bias=True)
     dense_conv.weight.data = conv.weight.data
@@ -807,7 +846,7 @@ def test_dense_graph_conv(norm_type, g, idtype, out_dim):
 def test_dense_sage_conv(g, idtype, out_dim):
     g = g.astype(idtype).to(F.ctx())
     ctx = F.ctx()
-    adj = g.adjacency_matrix(transpose=False, ctx=ctx).to_dense()
+    adj = g.adjacency_matrix(transpose=True, ctx=ctx).to_dense()
     sage = nn.SAGEConv(5, out_dim, 'gcn')
     dense_sage = nn.DenseSAGEConv(5, out_dim)
     dense_sage.fc.weight.data = sage.fc_neigh.weight.data
@@ -894,7 +933,7 @@ def test_dense_cheb_conv(out_dim):
         ctx = F.ctx()
         g = dgl.DGLGraph(sp.sparse.random(100, 100, density=0.1), readonly=True)
         g = g.to(F.ctx())
-        adj = g.adjacency_matrix(transpose=False, ctx=ctx).to_dense()
+        adj = g.adjacency_matrix(transpose=True, ctx=ctx).to_dense()
         cheb = nn.ChebConv(5, out_dim, k, None)
         dense_cheb = nn.DenseChebConv(5, out_dim, k)
         #for i in range(len(cheb.fc)):
@@ -1095,6 +1134,19 @@ def test_hetero_conv(agg, idtype):
     assert mod3.carg1 == 0
     assert mod3.carg2 == 1
 
+    #conv on graph without any edges
+    for etype in g.etypes:
+        g = dgl.remove_edges(g, g.edges(form='eid', etype=etype), etype=etype)
+    assert g.num_edges() == 0
+    h = conv(g, {'user': uf, 'game': gf, 'store': sf})
+    assert set(h.keys()) == {'user', 'game'}
+
+    block = dgl.to_block(g.to(F.cpu()), {'user': [0, 1, 2, 3], 'game': [
+                         0, 1, 2, 3], 'store': []}).to(F.ctx())
+    h = conv(block, ({'user': uf, 'game': gf, 'store': sf},
+             {'user': uf, 'game': gf, 'store': sf[0:0]}))
+    assert set(h.keys()) == {'user', 'game'}
+
 if __name__ == '__main__':
     test_graph_conv()
     test_graph_conv_e_weight()
@@ -1107,12 +1159,14 @@ if __name__ == '__main__':
     test_rgcn_sorted()
     test_tagconv()
     test_gat_conv()
+    test_egat_conv()
     test_sage_conv()
     test_sgc_conv()
     test_appnp_conv()
     test_gin_conv()
     test_agnn_conv()
     test_gated_graph_conv()
+    test_gated_graph_conv_one_etype()
     test_nn_conv()
     test_gmm_conv()
     test_dotgat_conv()
@@ -1122,3 +1176,4 @@ if __name__ == '__main__':
     test_sequential()
     test_atomic_conv()
     test_cf_conv()
+    test_hetero_conv()

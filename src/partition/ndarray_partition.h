@@ -9,6 +9,7 @@
 #define DGL_PARTITION_NDARRAY_PARTITION_H_
 
 #include <dgl/runtime/object.h>
+#include <dgl/packed_func_ext.h>
 #include <dgl/array.h>
 #include <utility>
 
@@ -65,6 +66,29 @@ class NDArrayPartition : public runtime::Object {
       IdArray in_idx) const = 0;
 
   /**
+   * @brief Generate the global indices (the numbering unique across all
+   * processors) from a set of local indices.
+   *
+   * @param in_idx The local indices.
+   * @param part_id The part id.
+   *
+   * @return The global indices.
+   */
+  virtual IdArray MapToGlobal(
+      IdArray in_idx,
+      int part_id) const = 0;
+
+  /**
+   * @brief Get the number of rows/items assigned to the given part.
+   *
+   * @param part_id The part id.
+   *
+   * @return The size.
+   */
+  virtual int64_t PartSize(
+          int part_id) const = 0;
+
+  /**
    * @brief Get the first dimension of the partitioned array.
    *
    * @return The size.
@@ -97,6 +121,24 @@ DGL_DEFINE_OBJECT_REF(NDArrayPartitionRef, NDArrayPartition);
 NDArrayPartitionRef CreatePartitionRemainderBased(
     int64_t array_size,
     int num_parts);
+
+
+/**
+ * @brief Create a new partition object, using the range (exclusive prefix-sum)
+ * provided to identify which rows belong to which partitions.
+ *
+ * @param array_size The size of the partitioned array.
+ * @param num_parts The number of parts the array is partitioned into.
+ * @param range The exclusive prefix-sum of the number of rows owned by each
+ * partition. The first value must be zero, and the last value must be the
+ * total number of rows. It should be of length `num_parts+1`.
+ *
+ * @return The partition object.
+ */
+NDArrayPartitionRef CreatePartitionRangeBased(
+    int64_t array_size,
+    int num_parts,
+    IdArray range);
 
 }  // namespace partition
 }  // namespace dgl

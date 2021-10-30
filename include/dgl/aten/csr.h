@@ -113,12 +113,13 @@ struct CSRMatrix {
   }
 
   /*! \brief Return a copy of this matrix on the give device context. */
-  inline CSRMatrix CopyTo(const DLContext& ctx) const {
+  inline CSRMatrix CopyTo(const DLContext &ctx,
+                          const DGLStreamHandle &stream = nullptr) const {
     if (ctx == indptr->ctx)
       return *this;
-    return CSRMatrix(num_rows, num_cols,
-                     indptr.CopyTo(ctx), indices.CopyTo(ctx),
-                     aten::IsNullArray(data)? data : data.CopyTo(ctx),
+    return CSRMatrix(num_rows, num_cols, indptr.CopyTo(ctx, stream),
+                     indices.CopyTo(ctx, stream),
+                     aten::IsNullArray(data) ? data : data.CopyTo(ctx, stream),
                      sorted);
   }
 };
@@ -387,6 +388,55 @@ COOMatrix CSRRowWiseSampling(
     bool replace = true);
 
 /*!
+ * \brief Randomly select a fixed number of non-zero entries for each edge type
+ *        along each given row independently.
+ *
+ * The function performs random choices along each row independently.
+ * In each row, num_samples samples is picked for each edge type. (The edge
+ * type is stored in etypes)
+ * The picked indices are returned in the form of a COO matrix.
+ *
+ * If replace is false and a row has fewer non-zero values than num_samples,
+ * all the values are picked.
+ *
+ * Examples: TODO
+ *
+ * // csr.num_rows = 4;
+ * // csr.num_cols = 4;
+ * // csr.indptr = [0, 4, 4, 4, 5]
+ * // csr.cols = [0, 1, 3, 2, 3]
+ * // csr.data = [2, 3, 0, 1, 4]
+ * // etype = [0, 0, 0, 2, 1]
+ * CSRMatrix csr = ...;
+ * IdArray rows = ... ; // [0, 3]
+ * COOMatrix sampled = CSRRowWisePerEtypeSampling(csr, rows, etype, 2, FloatArray(), false);
+ * // possible sampled coo matrix:
+ * // sampled.num_rows = 4
+ * // sampled.num_cols = 4
+ * // sampled.rows = [0, 0, 0, 3]
+ * // sampled.cols = [0, 3, 2, 3]
+ * // sampled.data = [2, 0, 1, 4]
+ *
+ * \param mat Input CSR matrix.
+ * \param rows Rows to sample from.
+ * \param etypes Edge types of each edge.
+ * \param num_samples Number of samples
+ * \param prob Unnormalized probability array. Should be of the same length as the data array.
+ *             If an empty array is provided, assume uniform.
+ * \param replace True if sample with replacement
+ * \param etype_sorted True if the edge types are already sorted
+ * \return A COOMatrix storing the picked row, col and data indices.
+ */
+COOMatrix CSRRowWisePerEtypeSampling(
+    CSRMatrix mat,
+    IdArray rows,
+    IdArray etypes,
+    int64_t num_samples,
+    FloatArray prob = FloatArray(),
+    bool replace = true,
+    bool etype_sorted = false);
+
+/*!
  * \brief Select K non-zero entries with the largest weights along each given row.
  *
  * The function performs top-k selection along each row independently.
@@ -429,6 +479,71 @@ COOMatrix CSRRowWiseTopk(
     int64_t k,
     FloatArray weight,
     bool ascending = false);
+
+
+
+/*!
+ * \brief Randomly select a fixed number of non-zero entries along each given row independently,
+ *        where the probability of columns to be picked can be biased according to its tag.
+ *
+ * Each column is assigned an integer tag which determines its probability to be sampled.
+ * Users can assign different probability to different tags.
+ *
+ * This function only works with a CSR matrix sorted according to the tag so that entries with
+ * the same column tag are arranged in a consecutive range, and the input `tag_offset` represents
+ * the boundaries of these ranges. However, the function itself will not check if the input matrix
+ * has been sorted. It's the caller's responsibility to ensure the input matrix has been sorted
+ * by `CSRSortByTag` (it will also return a NDArray `tag_offset` which should be used as an input
+ * of this function).
+ *
+ * The picked indices are returned in the form of a COO matrix.
+ *
+ * If replace is false and a row has fewer non-zero values than num_samples,
+ * all the values are picked.
+ *
+ * Examples:
+ *
+ * // csr.num_rows = 4;
+ * // csr.num_cols = 4;
+ * // csr.indptr = [0, 2, 4, 5, 5]
+ * // csr.indices =                [1, 2, 2, 3, 3]
+ * // tag of each element's column: 0, 0, 0, 1, 1
+ * // tag_offset = [[0, 2, 2], [0, 1, 2], [0, 0, 1]]
+ * // csr.data = [2, 3, 0, 1, 4]
+ * // bias = [1.0, 0.0]
+ * CSRMatrix mat = ...;
+ * IdArray rows = ...; //[0, 1]
+ * NDArray tag_offset = ...;
+ * FloatArray bias = ...;
+ * COOMatrix sampled = CSRRowWiseSamplingBiased(mat, rows, 1, bias);
+ * // possible sampled coo matrix:
+ * // sampled.num_rows = 4
+ * // sampled.num_cols = 4
+ * // sampled.rows = [0, 1]
+ * // sampled.cols = [1, 2]
+ * // sampled.data = [2, 0]
+ * // Note that in this case, for row 1, the column 3 will never be picked as it has tag 1 and the
+ * // probability of tag 1 is 0.
+ *
+ *
+ * \param mat Input CSR matrix.
+ * \param rows Rows to sample from.
+ * \param num_samples Number of samples.
+ * \param tag_offset The boundaries of tags. Should be of the shape [num_row, num_tags+1]
+ * \param bias Unnormalized probability array. Should be of length num_tags
+ * \param replace True if sample with replacement
+ * \return A COOMatrix storing the picked row and col indices. Its data field stores the
+ *         the index of the picked elements in the value array.
+ *
+ */
+COOMatrix CSRRowWiseSamplingBiased(
+    CSRMatrix mat,
+    IdArray rows,
+    int64_t num_samples,
+    NDArray tag_offset,
+    FloatArray bias,
+    bool replace = true
+);
 
 /*!
  * \brief Sort the column index according to the tag of each column.
@@ -554,7 +669,7 @@ CSRMatrix DisjointUnionCsr(
 std::tuple<CSRMatrix, IdArray, IdArray> CSRToSimple(const CSRMatrix& csr);
 
 /*!
- * \brief Split a CSRMatrix into multiple disjoin components.
+ * \brief Split a CSRMatrix into multiple disjoint components.
  *
  * Examples:
  *
@@ -603,6 +718,47 @@ std::vector<CSRMatrix> DisjointPartitionCsrBySizes(
   const std::vector<uint64_t> &edge_cumsum,
   const std::vector<uint64_t> &src_vertex_cumsum,
   const std::vector<uint64_t> &dst_vertex_cumsum);
+
+/*!
+ * \brief Slice a contiguous chunk from a CSRMatrix
+ *
+ * Examples:
+ *
+ * C = [[0, 0, 1, 0, 0],
+ *      [1, 0, 1, 0, 0],
+ *      [0, 1, 0, 0, 0],
+ *      [0, 0, 0, 0, 0],
+ *      [0, 0, 0, 1, 0],
+ *      [0, 0, 0, 0, 1]]
+ * CSRMatrix_C.num_rows : 6
+ * CSRMatrix_C.num_cols : 5
+ *
+ * edge_range : [4, 6]
+ * src_vertex_range : [3, 6]
+ * dst_vertex_range : [3, 5]
+ *
+ * ret = CSRSliceContiguousChunk(C,
+ *                               edge_range,
+ *                               src_vertex_range,
+ *                               dst_vertex_range)
+ *
+ * ret = [[0, 0],
+ *        [1, 0],
+ *        [0, 1]]
+ * CSRMatrix_ret.num_rows : 3
+ * CSRMatrix_ret.num_cols : 2
+ *
+ * \param csr CSRMatrix to slice.
+ * \param edge_range ID range of the edges in the chunk
+ * \param src_vertex_range ID range of the src vertices in the chunk.
+ * \param dst_vertex_range ID range of the dst vertices in the chunk.
+ * \return CSRMatrix representing the chunk.
+ */
+CSRMatrix CSRSliceContiguousChunk(
+  const CSRMatrix &csr,
+  const std::vector<uint64_t> &edge_range,
+  const std::vector<uint64_t> &src_vertex_range,
+  const std::vector<uint64_t> &dst_vertex_range);
 
 }  // namespace aten
 }  // namespace dgl
